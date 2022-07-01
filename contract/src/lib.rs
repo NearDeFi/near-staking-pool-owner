@@ -164,12 +164,7 @@ impl Contract {
 
     // #[private]
     // #[init(ignore_state)]
-    // pub fn migrate(
-    //     oracle_contract_id: AccountId,
-    //     ref_finance_contract_id: AccountId,
-    //     wrap_near_contract_id: AccountId,
-    //     swap_path: Vec<Action>,
-    // ) -> Self {
+    // pub fn migrate() -> Self {
     //     #[derive(BorshDeserialize)]
     //     pub struct OldContract {
     //         staking_pool_account_id: AccountId,
@@ -182,20 +177,12 @@ impl Contract {
     //         full_rewards_duration: Duration,
     //         farm_id: u64,
     //         usn_distributed: Balance,
+    //         oracle_contract_id: AccountId,
+    //         ref_finance_contract_id: AccountId,
+    //         wrap_near_contract_id: AccountId,
+    //         swap_path: Vec<Action>,
     //     }
     //     let OldContract {
-    //         staking_pool_account_id,
-    //         owner_id,
-    //         usn_contract_id,
-    //         rewards_received,
-    //         available_rewards,
-    //         last_reward_distribution,
-    //         farm_duration,
-    //         full_rewards_duration,
-    //         farm_id,
-    //         usn_distributed,
-    //     } = env::state_read().unwrap();
-    //     let this = Self {
     //         staking_pool_account_id,
     //         owner_id,
     //         usn_contract_id,
@@ -210,9 +197,24 @@ impl Contract {
     //         ref_finance_contract_id,
     //         wrap_near_contract_id,
     //         swap_path,
-    //     };
-    //     this.assert_valid_swap_path();
-    //     this
+    //     } = env::state_read().unwrap();
+    //     Self {
+    //         staking_pool_account_id,
+    //         owner_id,
+    //         usn_contract_id,
+    //         rewards_received,
+    //         available_rewards,
+    //         last_reward_distribution,
+    //         farm_duration,
+    //         full_rewards_duration,
+    //         farm_id,
+    //         usn_distributed,
+    //         oracle_contract_id,
+    //         ref_finance_contract_id,
+    //         wrap_near_contract_id,
+    //         swap_path,
+    //         wrapped_amount: 0,
+    //     }
     // }
 
     pub fn get_info(&self) -> &Self {
@@ -349,6 +351,7 @@ impl Contract {
         } else {
             log!("Swap failed by gas");
         }
+        self.wrapped_amount += reward.0;
         self.available_rewards += reward.0;
     }
 
@@ -441,16 +444,19 @@ impl OraclePriceReceiver for Contract {
             wnear_price.multiplier * wnear_extra,
             usn_price.multiplier * usn_extra,
         );
-        // Slippage 0.5%
-        let min_amount_out = U128(u128_ratio(oracle_amount_out, 995, 1000));
+        // Slippage 1%
+        let min_amount_out = U128(u128_ratio(oracle_amount_out, 99, 100));
         let mut actions = self.swap_path.clone();
         actions.last_mut().unwrap().min_amount_out = min_amount_out;
+
+        let wrap_amount = reward.saturating_sub(self.wrapped_amount) + 1;
+        self.wrapped_amount = self.wrapped_amount.saturating_sub(wrap_amount);
 
         Promise::new(self.wrap_near_contract_id.clone())
             .function_call(
                 "near_deposit".to_string(),
                 b"{}".to_vec(),
-                reward,
+                wrap_amount,
                 WRAP_NEAR_GAS,
             )
             .function_call(
