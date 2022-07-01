@@ -5,7 +5,7 @@ set -e
 
 DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
 
-NAME="build_contract"
+NAME="pool_build_contract"
 
 if docker ps -a --format '{{.Names}}' | grep -Eq "^${NAME}\$"; then
     echo "Container exists"

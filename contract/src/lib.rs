@@ -1,3 +1,9 @@
+mod utils;
+
+use crate::utils::*;
+use std::collections::HashMap;
+use std::convert::TryFrom;
+
 use near_contract_standards::fungible_token::core_impl::ext_fungible_token;
 use near_sdk::borsh::{self, BorshDeserialize, BorshSerialize};
 use near_sdk::json_types::{U128, U64};
@@ -14,10 +20,12 @@ const ON_DISTRIBUTE_GAS: Gas = Gas(120_000_000_000_000);
 const WITHDRAW_GAS: Gas = Gas(25_000_000_000_000);
 const ON_WITHDRAW_GAS: Gas = Gas(60_000_000_000_000);
 const UNSTAKE_ALL_GAS: Gas = Gas(50_000_000_000_000);
-const USN_BUY_GAS: Gas = Gas(120_000_000_000_000);
-const ON_BUY_GAS: Gas = Gas(100_000_000_000_000);
+
+const SWAP_GAS: Gas = Gas(120_000_000_000_000);
+const ON_SWAP_GAS: Gas = Gas(100_000_000_000_000);
 const FT_BALANCE_OF_GAS: Gas = Gas(10_000_000_000_000);
 const FT_TRANSFER_CALL_ADD_FARM_GAS: Gas = Gas(80_000_000_000_000);
+const WRAP_NEAR_GAS: Gas = Gas(5_000_000_000_000);
 
 const DEFAULT_FARM_DURATION: Duration = 7 * 24 * 60 * 60 * 1_000_000_000;
 const FULL_REWARDS_DURATION: u64 = 3 * 24 * 60 * 60 * 1_000_000_000;
@@ -48,22 +56,48 @@ pub trait StakingPoolContract {
     fn withdraw(&mut self, amount: U128);
 }
 
-/// Interface for a staking contract
-#[ext_contract(ext_usn)]
-pub trait UsnContract {
-    fn buy(&mut self, expected: Option<String>);
-}
-
 #[ext_contract(ext_self)]
 pub trait ExtContract {
     /* Callback from checking unstaked balance */
     fn on_get_account(&mut self, #[callback] account: StakingPoolAccount);
     /* Callback from staking rewards withdraw */
     fn on_withdraw(&mut self, unstaked_amount: U128, unstake_all: bool);
-    /* Callback from USN buy */
-    fn on_buy(&mut self, #[callback_result] usn_amount: Result<U128, PromiseError>, reward: U128);
+    /* Callback from REF buy */
+    fn on_swap(
+        &mut self,
+        #[callback_result] transfer_amount: Result<U128, PromiseError>,
+        min_amount_out: U128,
+        reward: U128,
+    );
     /* Callback from USN token balance */
     fn on_usn_balance(&mut self, #[callback] usn_amount: U128);
+}
+
+#[derive(Serialize)]
+#[serde(crate = "near_sdk::serde")]
+pub struct FtTransferCallArgs {
+    pub receiver_id: AccountId,
+    pub amount: U128,
+    pub msg: String,
+}
+
+#[derive(BorshDeserialize, BorshSerialize, Serialize, Deserialize, Clone)]
+#[serde(crate = "near_sdk::serde")]
+pub struct Action {
+    /// Pool which should be used for swapping.
+    pub pool_id: u64,
+    /// Token to swap from.
+    pub token_in: AccountId,
+    /// Token to swap into.
+    pub token_out: AccountId,
+    /// Required minimum amount of token_out.
+    pub min_amount_out: U128,
+}
+
+#[derive(Serialize)]
+#[serde(crate = "near_sdk::serde")]
+pub struct RefArgs {
+    actions: Vec<Action>,
 }
 
 #[near_bindgen]
@@ -86,6 +120,12 @@ pub struct Contract {
     farm_id: u64,
     #[serde(with = "u128_dec_format")]
     usn_distributed: Balance,
+    oracle_contract_id: AccountId,
+    ref_finance_contract_id: AccountId,
+    wrap_near_contract_id: AccountId,
+    swap_path: Vec<Action>,
+    #[serde(with = "u128_dec_format")]
+    wrapped_amount: Balance,
 }
 
 #[near_bindgen]
@@ -96,8 +136,12 @@ impl Contract {
         owner_id: AccountId,
         usn_contract_id: AccountId,
         farm_id: u64,
+        oracle_contract_id: AccountId,
+        ref_finance_contract_id: AccountId,
+        wrap_near_contract_id: AccountId,
+        swap_path: Vec<Action>,
     ) -> Self {
-        Self {
+        let this = Self {
             staking_pool_account_id,
             owner_id,
             usn_contract_id,
@@ -108,12 +152,24 @@ impl Contract {
             full_rewards_duration: FULL_REWARDS_DURATION,
             farm_id,
             usn_distributed: 0,
-        }
+            oracle_contract_id,
+            ref_finance_contract_id,
+            wrap_near_contract_id,
+            swap_path,
+            wrapped_amount: 0,
+        };
+        this.assert_valid_swap_path();
+        this
     }
 
     // #[private]
     // #[init(ignore_state)]
-    // pub fn migrate() -> Self {
+    // pub fn migrate(
+    //     oracle_contract_id: AccountId,
+    //     ref_finance_contract_id: AccountId,
+    //     wrap_near_contract_id: AccountId,
+    //     swap_path: Vec<Action>,
+    // ) -> Self {
     //     #[derive(BorshDeserialize)]
     //     pub struct OldContract {
     //         staking_pool_account_id: AccountId,
@@ -125,6 +181,7 @@ impl Contract {
     //         farm_duration: Duration,
     //         full_rewards_duration: Duration,
     //         farm_id: u64,
+    //         usn_distributed: Balance,
     //     }
     //     let OldContract {
     //         staking_pool_account_id,
@@ -136,8 +193,9 @@ impl Contract {
     //         farm_duration,
     //         full_rewards_duration,
     //         farm_id,
+    //         usn_distributed,
     //     } = env::state_read().unwrap();
-    //     Self {
+    //     let this = Self {
     //         staking_pool_account_id,
     //         owner_id,
     //         usn_contract_id,
@@ -147,8 +205,14 @@ impl Contract {
     //         farm_duration,
     //         full_rewards_duration,
     //         farm_id,
-    //         usn_distributed: 0,
-    //     }
+    //         usn_distributed,
+    //         oracle_contract_id,
+    //         ref_finance_contract_id,
+    //         wrap_near_contract_id,
+    //         swap_path,
+    //     };
+    //     this.assert_valid_swap_path();
+    //     this
     // }
 
     pub fn get_info(&self) -> &Self {
@@ -240,6 +304,12 @@ impl Contract {
         self.farm_duration = u64::from(farm_duration_sec) * 10u64.pow(9);
     }
 
+    pub fn set_swap_path(&mut self, swap_path: Vec<Action>) {
+        self.assert_owner();
+        self.swap_path = swap_path;
+        self.assert_valid_swap_path();
+    }
+
     pub fn get_near_reward_for_distribution(&self) -> U128 {
         let time_diff = env::block_timestamp() - self.last_reward_distribution;
         if time_diff >= self.full_rewards_duration {
@@ -247,8 +317,8 @@ impl Contract {
         } else {
             u128_ratio(
                 self.available_rewards,
-                time_diff,
-                self.full_rewards_duration,
+                time_diff as u128,
+                self.full_rewards_duration as u128,
             )
         }
         .into()
@@ -262,35 +332,24 @@ impl Contract {
         self.available_rewards += attached_deposit;
     }
 
-    pub fn distribute_near(&mut self) -> Promise {
-        let reward = self.get_near_reward_for_distribution().0;
-        require!(reward > 0, "Nothing to distribute");
-
-        self.available_rewards -= reward;
-        self.last_reward_distribution = env::block_timestamp();
-
-        ext_usn::buy(None, self.usn_contract_id.clone(), reward, USN_BUY_GAS).then(
-            ext_self::on_buy(
-                U128(reward),
-                env::current_account_id(),
-                NO_DEPOSIT,
-                ON_BUY_GAS,
-            ),
-        )
-    }
-
     #[private]
-    pub fn on_buy(
+    pub fn on_swap(
         &mut self,
-        #[callback_result] usn_amount: Result<U128, PromiseError>,
+        #[callback_result] transfer_amount: Result<U128, PromiseError>,
+        min_amount_out: U128,
         reward: U128,
     ) {
-        if let Ok(usn_amount) = usn_amount {
-            self.internal_distribute_usn(usn_amount.0).as_return();
+        if let Ok(transfer_amount) = transfer_amount {
+            if transfer_amount.0 == reward.0 {
+                self.internal_distribute_usn(min_amount_out.0).as_return();
+                return;
+            } else {
+                log!("Swap failed by slippage");
+            }
         } else {
-            log!("Failed to buy USN");
-            self.available_rewards += reward.0;
+            log!("Swap failed by gas");
         }
+        self.available_rewards += reward.0;
     }
 
     #[private]
@@ -310,12 +369,108 @@ impl Contract {
         .then(ext_self::on_usn_balance(
             env::current_account_id(),
             NO_DEPOSIT,
-            ON_BUY_GAS,
+            ON_SWAP_GAS,
         ))
     }
 
     pub fn get_staking_pool(&self) -> AccountId {
         self.staking_pool_account_id.clone()
+    }
+}
+
+#[near_bindgen]
+impl OraclePriceReceiver for Contract {
+    #[allow(unused)]
+    fn oracle_on_call(&mut self, sender_id: AccountId, data: PriceData, msg: String) -> Promise {
+        assert_eq!(env::predecessor_account_id(), self.oracle_contract_id);
+
+        assert!(
+            data.recency_duration_sec <= 90,
+            "Recency duration in the oracle call is larger than allowed maximum"
+        );
+        let timestamp = env::block_timestamp();
+        assert!(
+            data.timestamp <= timestamp,
+            "Price data timestamp is in the future"
+        );
+        assert!(
+            timestamp - data.timestamp <= 15_000_000_000,
+            "Price data timestamp is too stale"
+        );
+
+        let reward = self.get_near_reward_for_distribution().0;
+        require!(reward > 0, "Nothing to distribute");
+
+        let prices: HashMap<AccountId, Price> = data
+            .prices
+            .into_iter()
+            .filter_map(|AssetOptionalPrice { asset_id, price }| {
+                let token_id =
+                    AccountId::try_from(asset_id).expect("Asset is not a valid token ID");
+                price.map(|price| {
+                    price.assert_valid();
+                    (token_id, price)
+                })
+            })
+            .collect();
+
+        self.available_rewards -= reward;
+        self.last_reward_distribution = env::block_timestamp();
+
+        let usn_price = prices
+            .get(&self.usn_contract_id)
+            .expect("Missing USN price");
+        let wnear_price = prices
+            .get(&self.wrap_near_contract_id)
+            .expect("Missing wNEAR price");
+
+        let wnear_extra = if wnear_price.decimals < usn_price.decimals {
+            10u128.pow((usn_price.decimals - wnear_price.decimals) as _)
+        } else {
+            1
+        };
+
+        let usn_extra = if usn_price.decimals < wnear_price.decimals {
+            10u128.pow((wnear_price.decimals - usn_price.decimals) as _)
+        } else {
+            1
+        };
+
+        let oracle_amount_out = u128_ratio(
+            reward,
+            wnear_price.multiplier * wnear_extra,
+            usn_price.multiplier * usn_extra,
+        );
+        // Slippage 0.5%
+        let min_amount_out = U128(u128_ratio(oracle_amount_out, 995, 1000));
+        let mut actions = self.swap_path.clone();
+        actions.last_mut().unwrap().min_amount_out = min_amount_out;
+
+        Promise::new(self.wrap_near_contract_id.clone())
+            .function_call(
+                "near_deposit".to_string(),
+                b"{}".to_vec(),
+                reward,
+                WRAP_NEAR_GAS,
+            )
+            .function_call(
+                "ft_transfer_call".to_string(),
+                serde_json::to_vec(&FtTransferCallArgs {
+                    receiver_id: self.ref_finance_contract_id.clone(),
+                    amount: U128(reward),
+                    msg: serde_json::to_string(&RefArgs { actions }).unwrap(),
+                })
+                .unwrap(),
+                ONE_YOCTO,
+                SWAP_GAS,
+            )
+            .then(ext_self::on_swap(
+                min_amount_out,
+                U128(reward),
+                env::current_account_id(),
+                NO_DEPOSIT,
+                ON_SWAP_GAS,
+            ))
     }
 }
 
@@ -329,6 +484,21 @@ pub struct FarmingDetails {
 }
 
 impl Contract {
+    pub fn assert_valid_swap_path(&self) {
+        assert_eq!(
+            self.swap_path.first().unwrap().token_in,
+            self.wrap_near_contract_id
+        );
+        assert_eq!(
+            self.swap_path.last().unwrap().token_out,
+            self.usn_contract_id
+        );
+        assert!(self
+            .swap_path
+            .iter()
+            .all(|action| action.min_amount_out.0 == 0));
+    }
+
     pub fn internal_distribute_usn(&mut self, usn_amount: Balance) -> Promise {
         self.usn_distributed += usn_amount;
         ext_fungible_token::ft_transfer_call(
@@ -359,50 +529,6 @@ uint::construct_uint!(
     pub struct U256(4);
 );
 
-pub(crate) fn u128_ratio(a: u128, num: u64, denom: u64) -> Balance {
+pub(crate) fn u128_ratio(a: u128, num: u128, denom: u128) -> Balance {
     (U256::from(a) * U256::from(num) / U256::from(denom)).as_u128()
-}
-
-pub(crate) mod u128_dec_format {
-    use near_sdk::serde::de;
-    use near_sdk::serde::{Deserialize, Deserializer, Serializer};
-
-    pub fn serialize<S>(num: &u128, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(&num.to_string())
-    }
-
-    #[allow(dead_code)]
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<u128, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        String::deserialize(deserializer)?
-            .parse()
-            .map_err(de::Error::custom)
-    }
-}
-
-pub(crate) mod u64_dec_format {
-    use near_sdk::serde::de;
-    use near_sdk::serde::{Deserialize, Deserializer, Serializer};
-
-    pub fn serialize<S>(num: &u64, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(&num.to_string())
-    }
-
-    #[allow(dead_code)]
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<u64, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        String::deserialize(deserializer)?
-            .parse()
-            .map_err(de::Error::custom)
-    }
 }
