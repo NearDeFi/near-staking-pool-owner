@@ -126,6 +126,8 @@ pub struct Contract {
     swap_path: Vec<Action>,
     #[serde(with = "u128_dec_format")]
     wrapped_amount: Balance,
+    #[serde(with = "u128_dec_format")]
+    max_near_reward: Balance,
 }
 
 #[near_bindgen]
@@ -140,6 +142,7 @@ impl Contract {
         ref_finance_contract_id: AccountId,
         wrap_near_contract_id: AccountId,
         swap_path: Vec<Action>,
+        max_near_reward: U128,
     ) -> Self {
         let this = Self {
             staking_pool_account_id,
@@ -157,65 +160,69 @@ impl Contract {
             wrap_near_contract_id,
             swap_path,
             wrapped_amount: 0,
+            max_near_reward: max_near_reward.0,
         };
         this.assert_valid_swap_path();
         this
     }
 
-    // #[private]
-    // #[init(ignore_state)]
-    // pub fn migrate() -> Self {
-    //     #[derive(BorshDeserialize)]
-    //     pub struct OldContract {
-    //         staking_pool_account_id: AccountId,
-    //         owner_id: AccountId,
-    //         usn_contract_id: AccountId,
-    //         rewards_received: Balance,
-    //         available_rewards: Balance,
-    //         last_reward_distribution: Timestamp,
-    //         farm_duration: Duration,
-    //         full_rewards_duration: Duration,
-    //         farm_id: u64,
-    //         usn_distributed: Balance,
-    //         oracle_contract_id: AccountId,
-    //         ref_finance_contract_id: AccountId,
-    //         wrap_near_contract_id: AccountId,
-    //         swap_path: Vec<Action>,
-    //     }
-    //     let OldContract {
-    //         staking_pool_account_id,
-    //         owner_id,
-    //         usn_contract_id,
-    //         rewards_received,
-    //         available_rewards,
-    //         last_reward_distribution,
-    //         farm_duration,
-    //         full_rewards_duration,
-    //         farm_id,
-    //         usn_distributed,
-    //         oracle_contract_id,
-    //         ref_finance_contract_id,
-    //         wrap_near_contract_id,
-    //         swap_path,
-    //     } = env::state_read().unwrap();
-    //     Self {
-    //         staking_pool_account_id,
-    //         owner_id,
-    //         usn_contract_id,
-    //         rewards_received,
-    //         available_rewards,
-    //         last_reward_distribution,
-    //         farm_duration,
-    //         full_rewards_duration,
-    //         farm_id,
-    //         usn_distributed,
-    //         oracle_contract_id,
-    //         ref_finance_contract_id,
-    //         wrap_near_contract_id,
-    //         swap_path,
-    //         wrapped_amount: 0,
-    //     }
-    // }
+    #[private]
+    #[init(ignore_state)]
+    pub fn migrate(max_near_reward: U128) -> Self {
+        #[derive(BorshDeserialize)]
+        pub struct OldContract {
+            staking_pool_account_id: AccountId,
+            owner_id: AccountId,
+            usn_contract_id: AccountId,
+            rewards_received: Balance,
+            available_rewards: Balance,
+            last_reward_distribution: Timestamp,
+            farm_duration: Duration,
+            full_rewards_duration: Duration,
+            farm_id: u64,
+            usn_distributed: Balance,
+            oracle_contract_id: AccountId,
+            ref_finance_contract_id: AccountId,
+            wrap_near_contract_id: AccountId,
+            swap_path: Vec<Action>,
+            wrapped_amount: Balance,
+        }
+        let OldContract {
+            staking_pool_account_id,
+            owner_id,
+            usn_contract_id,
+            rewards_received,
+            available_rewards,
+            last_reward_distribution,
+            farm_duration,
+            full_rewards_duration,
+            farm_id,
+            usn_distributed,
+            oracle_contract_id,
+            ref_finance_contract_id,
+            wrap_near_contract_id,
+            swap_path,
+            wrapped_amount,
+        } = env::state_read().unwrap();
+        Self {
+            staking_pool_account_id,
+            owner_id,
+            usn_contract_id,
+            rewards_received,
+            available_rewards,
+            last_reward_distribution,
+            farm_duration,
+            full_rewards_duration,
+            farm_id,
+            usn_distributed,
+            oracle_contract_id,
+            ref_finance_contract_id,
+            wrap_near_contract_id,
+            swap_path,
+            wrapped_amount,
+            max_near_reward: max_near_reward.0,
+        }
+    }
 
     pub fn get_info(&self) -> &Self {
         self
@@ -312,9 +319,14 @@ impl Contract {
         self.assert_valid_swap_path();
     }
 
+    pub fn set_max_near_reward(&mut self, max_near_reward: U128) {
+        self.assert_owner();
+        self.max_near_reward = max_near_reward.0;
+    }
+
     pub fn get_near_reward_for_distribution(&self) -> U128 {
         let time_diff = env::block_timestamp() - self.last_reward_distribution;
-        if time_diff >= self.full_rewards_duration {
+        let reward = if time_diff >= self.full_rewards_duration {
             self.available_rewards
         } else {
             u128_ratio(
@@ -322,8 +334,8 @@ impl Contract {
                 time_diff as u128,
                 self.full_rewards_duration as u128,
             )
-        }
-        .into()
+        };
+        std::cmp::min(reward, self.max_near_reward).into()
     }
 
     #[payable]
