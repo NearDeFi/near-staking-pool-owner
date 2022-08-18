@@ -71,6 +71,8 @@ pub trait ExtContract {
     );
     /* Callback from USN token balance */
     fn on_usn_balance(&mut self, #[callback] usn_amount: U128);
+    /* Callback from wrap near token balance */
+    fn on_wrap_near_balance(&mut self, #[callback] wnear_amount: U128);
 }
 
 #[derive(Serialize)]
@@ -374,6 +376,11 @@ impl Contract {
         }
     }
 
+    #[private]
+    pub fn on_wrap_near_balance(&mut self, #[callback] wnear_amount: U128) {
+        self.wrapped_amount = wnear_amount.0;
+    }
+
     pub fn distribute_usn(&mut self) -> Promise {
         ext_fungible_token::ft_balance_of(
             env::current_account_id(),
@@ -382,6 +389,21 @@ impl Contract {
             FT_BALANCE_OF_GAS,
         )
         .then(ext_self::on_usn_balance(
+            env::current_account_id(),
+            NO_DEPOSIT,
+            ON_SWAP_GAS,
+        ))
+    }
+
+    pub fn refresh_wrap_near_balance(&mut self) -> Promise {
+        self.assert_owner();
+        ext_fungible_token::ft_balance_of(
+            env::current_account_id(),
+            self.wrap_near_contract_id.clone(),
+            NO_DEPOSIT,
+            FT_BALANCE_OF_GAS,
+        )
+        .then(ext_self::on_wrap_near_balance(
             env::current_account_id(),
             NO_DEPOSIT,
             ON_SWAP_GAS,
