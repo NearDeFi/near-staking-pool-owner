@@ -168,62 +168,75 @@ impl Contract {
         this
     }
 
-    #[private]
-    #[init(ignore_state)]
-    pub fn migrate(max_near_reward: U128) -> Self {
-        #[derive(BorshDeserialize)]
-        pub struct OldContract {
-            staking_pool_account_id: AccountId,
-            owner_id: AccountId,
-            usn_contract_id: AccountId,
-            rewards_received: Balance,
-            available_rewards: Balance,
-            last_reward_distribution: Timestamp,
-            farm_duration: Duration,
-            full_rewards_duration: Duration,
-            farm_id: u64,
-            usn_distributed: Balance,
-            oracle_contract_id: AccountId,
-            ref_finance_contract_id: AccountId,
-            wrap_near_contract_id: AccountId,
-            swap_path: Vec<Action>,
-            wrapped_amount: Balance,
-        }
-        let OldContract {
-            staking_pool_account_id,
-            owner_id,
-            usn_contract_id,
-            rewards_received,
-            available_rewards,
-            last_reward_distribution,
-            farm_duration,
-            full_rewards_duration,
-            farm_id,
-            usn_distributed,
-            oracle_contract_id,
-            ref_finance_contract_id,
-            wrap_near_contract_id,
-            swap_path,
-            wrapped_amount,
-        } = env::state_read().unwrap();
-        Self {
-            staking_pool_account_id,
-            owner_id,
-            usn_contract_id,
-            rewards_received,
-            available_rewards,
-            last_reward_distribution,
-            farm_duration,
-            full_rewards_duration,
-            farm_id,
-            usn_distributed,
-            oracle_contract_id,
-            ref_finance_contract_id,
-            wrap_near_contract_id,
-            swap_path,
-            wrapped_amount,
-            max_near_reward: max_near_reward.0,
-        }
+    // #[private]
+    // #[init(ignore_state)]
+    // pub fn migrate(max_near_reward: U128) -> Self {
+    //     #[derive(BorshDeserialize)]
+    //     pub struct OldContract {
+    //         staking_pool_account_id: AccountId,
+    //         owner_id: AccountId,
+    //         usn_contract_id: AccountId,
+    //         rewards_received: Balance,
+    //         available_rewards: Balance,
+    //         last_reward_distribution: Timestamp,
+    //         farm_duration: Duration,
+    //         full_rewards_duration: Duration,
+    //         farm_id: u64,
+    //         usn_distributed: Balance,
+    //         oracle_contract_id: AccountId,
+    //         ref_finance_contract_id: AccountId,
+    //         wrap_near_contract_id: AccountId,
+    //         swap_path: Vec<Action>,
+    //         wrapped_amount: Balance,
+    //     }
+    //     let OldContract {
+    //         staking_pool_account_id,
+    //         owner_id,
+    //         usn_contract_id,
+    //         rewards_received,
+    //         available_rewards,
+    //         last_reward_distribution,
+    //         farm_duration,
+    //         full_rewards_duration,
+    //         farm_id,
+    //         usn_distributed,
+    //         oracle_contract_id,
+    //         ref_finance_contract_id,
+    //         wrap_near_contract_id,
+    //         swap_path,
+    //         wrapped_amount,
+    //     } = env::state_read().unwrap();
+    //     Self {
+    //         staking_pool_account_id,
+    //         owner_id,
+    //         usn_contract_id,
+    //         rewards_received,
+    //         available_rewards,
+    //         last_reward_distribution,
+    //         farm_duration,
+    //         full_rewards_duration,
+    //         farm_id,
+    //         usn_distributed,
+    //         oracle_contract_id,
+    //         ref_finance_contract_id,
+    //         wrap_near_contract_id,
+    //         swap_path,
+    //         wrapped_amount,
+    //         max_near_reward: max_near_reward.0,
+    //     }
+    // }
+
+    pub fn update_token(
+        &mut self,
+        usn_contract_id: AccountId,
+        farm_id: u64,
+        swap_path: Vec<Action>,
+    ) {
+        self.assert_owner();
+        self.usn_contract_id = usn_contract_id;
+        self.farm_id = farm_id;
+        self.swap_path = swap_path;
+        self.assert_valid_swap_path();
     }
 
     pub fn get_info(&self) -> &Self {
